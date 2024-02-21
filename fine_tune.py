@@ -2,12 +2,11 @@
 import numpy as np
 import cv2
 import os
-import gc
 import math
 
 from PIL import Image
-from sklearn.model_selection import train_test_split
-import matplotlib.pyplot as plt
+
+import argparse
 
 import torch
 import torchvision.transforms as transforms
@@ -15,6 +14,26 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim
 from torch.utils.data import DataLoader, Dataset
+
+# parameters
+parser = argparse.ArgumentParser()
+parser.add_argument('--train_dir', type=str, required=True)
+parser.add_argument('--test_dir', type=str, required=True)
+parser.add_argument('--checkpoint', type=str, required=True)
+parser.add_argument('--batch_size', type=int, required=True)
+parser.add_argument('--epoch_num', type=int, required=True)
+parser.add_argument('--freeze', type=float, required=True)
+parser.add_argument('--loss_pattern_num', type=int, default=3)
+parser.add_argument('--save_results', type=bool, default=False)
+
+args = parser.parse_args()
+
+# create results folders
+if args.save_results:
+    os.makedirs('./results/original', exist_ok=True)
+    os.makedirs('./results/mosaiced', exist_ok=True)
+    os.makedirs('./results/fine_tuned', exist_ok=True)
+    os.makedirs('./results/not_fine_tuned', exist_ok=True)
 
 # CFA sampling
 def CFA(pic: np.ndarray):
@@ -194,7 +213,7 @@ class MyGehlerTrainDataset(Dataset):
         
     def __getitem__(self, index):
         imgs = os.listdir(self.filepath)
-        path = self.filepath + imgs[index]
+        path = self.filepath + '\\' + imgs[index]
         
         temp = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         # BGR -> RGB
@@ -232,7 +251,7 @@ class MyGehlerTestDataset(Dataset):
         
     def __getitem__(self, index):
         imgs = os.listdir(self.filepath)
-        path = self.filepath + imgs[index]
+        path = self.filepath + '\\' + imgs[index]
         
         temp = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         # BGR -> RGB
@@ -264,11 +283,11 @@ class MyGehlerTestDataset(Dataset):
 
 # processing datasets
 transform = transforms.Compose([transforms.ToTensor()])
-train_batch_size = 1
-train_number_epoch = 30
+train_batch_size = args.batch_size
+train_number_epoch = args.epoch_num
 
-train_dir2 = "/kaggle/input/gehler-shi-train/"
-test_dir = "/kaggle/input/gehler-shi-test/"
+train_dir2 = args.train_dir
+test_dir = args.test_dir
 
 trainset2 = MyGehlerTrainDataset(train_dir2, transform=transform)
 trainloader2 = DataLoader(trainset2, batch_size=train_batch_size, shuffle=False)
@@ -372,7 +391,7 @@ class UNet(nn.Module):
 # initializing
 net = UNet().cuda()
 loss_func = nn.MSELoss()
-net.load_state_dict(torch.load('/kaggle/input/best-pretrain-unet-230320/best_pretrain_unet_230320.pth'))
+net.load_state_dict(torch.load(args.checkpoint))
 best_train_loss = float('inf')
 best_test_loss = float('inf')
 lr = 1e-5
@@ -383,11 +402,12 @@ epochs = train_number_epoch
 
 # freeze paarameters
 layers = len(list(net.named_parameters()))
-print("layers = ", layers)
 for i, layer in enumerate(net.named_parameters(), 0):
-    if i < 0.9 * layers:
+    if i < args.freeze * layers:
         layer[1].requires_grad = False
-print("90% of the parameters are freezed")
+print("{}% of the parameters are freezed".format(args.freeze * 100))
+
+pat_num = args.loss_pattern_num
 
 # fine tune
 def SSL_train(trainloader, model, loss_func, optimizer):
@@ -453,7 +473,12 @@ def SSL_train(trainloader, model, loss_func, optimizer):
             
             optimizer.zero_grad()
             
-            loss = loss_func(output2_b, label_b) + loss_func(output3_b, label_b) + loss_func(output4_b, label_b)
+            if pat_num == 1:
+                loss = loss_func(output2_b, label_b)
+            elif pat_num == 2:
+                loss = loss_func(output2_b, label_b) + loss_func(output3_b, label_b)
+            else:
+                loss = loss_func(output2_b, label_b) + loss_func(output3_b, label_b) + loss_func(output4_b, label_b)
             loss.requires_grad_(True)
             loss.backward()
             
@@ -513,7 +538,7 @@ def SSL_train(trainloader, model, loss_func, optimizer):
         print("Epoch number: {} , Train loss: {:.4f}\nPSNR_R: {:.4f}, PSNR_G: {:.4f}, PSNR_B: {:.4f}, CPSNR: {:.4f}\n".format(epoch, train_loss_avg, psnr_r_avg, psnr_g_avg, psnr_b_avg, cpsnr_avg))
         if train_loss_avg < best_train_loss:
             best_train_loss = train_loss_avg
-            torch.save(model.state_dict(), '/kaggle/working/SSLbest_unet3p09.pth')
+            torch.save(model.state_dict(), './checkpoints/fine_tuned.pth')
 
 # test
 def SSL_test(testloader, model, loss_func, save_result, SSLflag):
@@ -545,7 +570,7 @@ def SSL_test(testloader, model, loss_func, save_result, SSLflag):
                 #rgb_range 1->255
                 labelImg = np.uint8(labelImg*255.)
                 labelImg = cv2.cvtColor(labelImg, cv2.COLOR_RGB2BGR)
-                cv2.imwrite("/kaggle/working/image/original/{}.png".format(j), labelImg)
+                cv2.imwrite("./results/original/{}.png".format(j), labelImg)
                 
                 #1*3(RGB)*H*W -> H*W*3(RGB)
                 labelImgTensor = CFA_d4(label, "RGGB")
@@ -553,7 +578,7 @@ def SSL_test(testloader, model, loss_func, save_result, SSLflag):
                 #rgb_range 1->255
                 labelImg = np.uint8(labelImg*255.)
                 labelImg = cv2.cvtColor(labelImg, cv2.COLOR_RGB2BGR)
-                cv2.imwrite("/kaggle/working/image/mosaiced/{}.png".format(j), labelImg)
+                cv2.imwrite("./results/mosaiced/{}.png".format(j), labelImg)
             
                 #1*3(RGB)*H*W -> H*W*3(RGB)
                 img = output[0].detach().cpu().numpy().transpose((1,2,0))
@@ -561,9 +586,9 @@ def SSL_test(testloader, model, loss_func, save_result, SSLflag):
                 img = np.uint8(img*255.)
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 if SSLflag:
-                    cv2.imwrite("/kaggle/working/image/SSLUnet/{}.png".format(j), img)
+                    cv2.imwrite("./results/fine_tuned/{}.png".format(j), img)
                 else:
-                    cv2.imwrite("/kaggle/working/image/Unet/{}.png".format(j), img)
+                    cv2.imwrite("./results/not_fine_tuned/{}.png".format(j), img)
 
             
             output = output.cuda()
@@ -621,12 +646,18 @@ def SSL_test(testloader, model, loss_func, save_result, SSLflag):
 
 print("The Test loss and PSNR before SSL:")
 
-SSL_test(test_dataloader, net, loss_func, False, False)
+if args.save_results:
+    SSL_test(test_dataloader, net, loss_func, True, False)
+else:
+    SSL_test(test_dataloader, net, loss_func, False, False)
 
 SSL_train(train_dataloader, net, loss_func, optimizer)
 
-net.load_state_dict(torch.load('/kaggle/working/SSLbest_unet1p09.pth'))
+net.load_state_dict(torch.load('./checkpoints/fine_tuned.pth'))
 
 print("The Test loss and PSNR after SSL:")
 
-SSL_test(test_dataloader, net, loss_func, True, True)
+if args.save_results:
+    SSL_test(test_dataloader, net, loss_func, True, True)
+else:
+    SSL_test(test_dataloader, net, loss_func, False, True)

@@ -2,12 +2,9 @@
 import numpy as np
 import cv2
 import os
-import gc
 import math
 
-from PIL import Image
-from sklearn.model_selection import train_test_split
-import matplotlib.pyplot as plt
+import argparse
 
 import torch
 import torchvision.transforms as transforms
@@ -16,7 +13,13 @@ import torch.nn as nn
 import torch.optim
 from torch.utils.data import DataLoader, Dataset
 
-import tqdm
+# parameters
+parser = argparse.ArgumentParser()
+parser.add_argument('--train_dir', type=str, required=True)
+parser.add_argument('--val_dir', type=str, required=True)
+parser.add_argument('--batch_size', type=int, required=True)
+parser.add_argument('--epoch_num', type=int, required=True)
+args = parser.parse_args()
 
 # CFA sampling
 def CFA(pic: np.ndarray):
@@ -159,8 +162,8 @@ class MyDataset(Dataset):
         self.transform = transform
         
     def __getitem__(self, index):
-        imgs = os.listdir(filepath)
-        path = filepath + imgs[index]
+        imgs = os.listdir(self.filepath)
+        path = self.filepath + '\\' + imgs[index]
         
         temp = cv2.imread(path)
         # BGR -> RGB
@@ -196,7 +199,7 @@ def train_data_get(data_path):
     imgs = os.listdir(data_path)
 
     for i in range(len(imgs)):
-        path = data_path + imgs[i]
+        path = data_path + '\\' + imgs[i]
         temp = cv2.imread(path)
         # BGR -> RGB
         temp = temp[:,:,::-1]
@@ -230,7 +233,7 @@ def val_data_get(data_path):
     imgs = os.listdir(data_path)
 
     for i in range(len(imgs)):
-        path = data_path + imgs[i]
+        path = data_path + '\\' + imgs[i]
         temp = cv2.imread(path)
         # BGR -> RGB
         temp = temp[:,:,::-1]
@@ -259,11 +262,11 @@ def val_data_get(data_path):
 
 # processing datasets
 transform = transforms.Compose([transforms.ToTensor()])
-train_batch_size = 16
-train_number_epoch = 50
+train_batch_size = args.batch_size
+train_number_epoch = args.epoch_num
 
-train_dir1 = "/kaggle/input/div2k-dataset/DIV2K_train_HR/DIV2K_train_HR/"
-val_dir = "/kaggle/input/div2k-dataset/DIV2K_valid_HR/DIV2K_valid_HR/"
+train_dir1 = args.train_dir
+val_dir = args.val_dir
 
 trainset1 = MyDataset(train_dir1, transform=transform)
 print("MyDataset Correct")
@@ -377,7 +380,7 @@ val_dataloader = valloader
 epochs = train_number_epoch
 
 # pre-training
-def Pre_train(trainloader, valloader, model, loss_func, optimizer):
+def pre_train(trainloader, valloader, model, loss_func, optimizer):
     global best_train_loss
     global best_val_loss
     device = torch.device('cuda')
@@ -487,4 +490,6 @@ def Pre_train(trainloader, valloader, model, loss_func, optimizer):
 
         if val_loss_avg < best_val_loss:
             best_val_loss = val_loss_avg
-            torch.save(net.state_dict(), '/kaggle/working/model/best_pretrain_unet.pth')
+            torch.save(net.state_dict(), './checkpoints/best_pretrain_unet.pth')
+
+pre_train(train_dataloader, val_dataloader, net, loss_func, optimizer)
